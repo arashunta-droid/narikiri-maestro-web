@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="なりきり">
+<meta name="theme-color" content="#0A0F1C">
+<link rel="apple-touch-icon" href="icon.png">
+<title>なりきりマエストロ お試し版</title>
+<!--
+  なりきりマエストロ iPhone(Web)お試し版
+  - 仕様は同フォルダの README.md を参照。拍検出・テンポマッピングは要件定義書4.1〜4.3(Android版)に準拠。
+  - ロジックは Android版 engine/BeatEngine.kt / TempoCurve.kt / TempoMapper.kt をJSへ移植したもの。
+  - 音源は同梱しない。ユーザーが「ファイル」アプリから自分のMP3/AAC(m4a)を選ぶ。
+-->
+<style>
+  :root {
+    --bg-base:#0A0F1C; --bg-surface:#12192B; --bg-surface-light:#1C2540;
+    --accent-blue:#4FC3F7; --accent-gold:#D4AF37;
+    --text:#F5F5F5; --text-2:#9AA3B5; --disabled:#2A2F3D;
+    --fast-deep:#C62828; --fast:#E85D5D; --neutral:#6B7280; --slow-light:#90CAF9; --slow:#4A90E2;
+    /* 要件定義書4.8: 左右端から約3mmはボタンを置かない(両脇を持って振るときの誤タッチ防止) */
+    --edge: calc(3mm + 10px);
+  }
+  * { box-sizing:border-box; }
+  html, body { margin:0; background:var(--bg-base); color:var(--text); }
+  body {
+    font-family:-apple-system, "Hiragino Sans", "Yu Gothic", sans-serif;
+    padding: max(12px, env(safe-area-inset-top)) max(var(--edge), env(safe-area-inset-right))
+             max(20px, env(safe-area-inset-bottom)) max(var(--edge), env(safe-area-inset-left));
+    -webkit-tap-highlight-color:transparent; touch-action:manipulation;
+    -webkit-user-select:none; user-select:none;
+  }
+  h1 { font-size:20px; margin:4px 0 2px; color:var(--accent-gold); letter-spacing:0.05em; }
+  .sub { font-size:12px; color:var(--text-2); margin:0 0 12px; }
+  .card { background:var(--bg-surface); border-radius:14px; padding:14px; margin-bottom:12px; }
+  .card h2 { font-size:14px; margin:0 0 8px; color:var(--text-2); font-weight:normal; }
+  p.note { font-size:13px; line-height:1.6; color:var(--text-2); margin:6px 0; }
+  p.warn { font-size:13px; line-height:1.6; color:#FFB74D; margin:6px 0; }
+  button, .filebtn {
+    display:block; width:100%; font-size:16px; padding:13px 10px; margin:8px 0; border:none; border-radius:10px;
+    background:var(--bg-surface-light); color:var(--text); font-family:inherit; text-align:center; cursor:pointer;
+  }
+  button:disabled { background:var(--disabled); color:#5c6375; }
+  button.hl { background:var(--accent-blue); color:#06121c; font-weight:bold; }
+  button.big { font-size:20px; padding:18px 10px; }
+  button.gold { background:var(--accent-gold); color:#1a1405; font-weight:bold; font-size:18px; }
+  .row { display:flex; gap:8px; }
+  .row > * { flex:1; }
+  .row > .narrow { flex:0 0 84px; font-size:14px; }
+  input[type=file] { display:none; }
+  #songName { font-size:14px; color:var(--text); word-break:break-all; min-height:1.4em; }
+  #status { font-size:14px; line-height:1.5; color:#FFD27A; min-height:3em; }
+  .meters { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:6px 0 4px; }
+  .meter { flex:1; text-align:center; }
+  .meter .lbl { font-size:12px; color:var(--text-2); }
+  .meter .num { font-size:40px; font-weight:bold; font-variant-numeric:tabular-nums; line-height:1.1; }
+  #indicator {
+    flex:0 0 64px; height:64px; border-radius:50%; background:var(--neutral);
+    border:3px solid rgba(255,255,255,0.25); transition:background 0.15s;
+  }
+  #indicator.beat { box-shadow:0 0 0 6px rgba(212,175,55,0.55); }
+  label.chk { display:flex; align-items:center; gap:8px; font-size:14px; margin:6px 0; color:var(--text-2); }
+  details { background:var(--bg-surface); border-radius:14px; padding:12px 14px; margin-bottom:12px; }
+  summary { font-size:15px; cursor:pointer; }
+  fieldset { border:1px solid #2c3552; border-radius:10px; margin:10px 0; padding:8px 10px; }
+  legend { font-size:12px; color:var(--accent-blue); padding:0 4px; }
+  .radio { display:inline-flex; align-items:center; gap:4px; margin:4px 12px 4px 0; font-size:14px; }
+  .slider { margin:10px 0; font-size:13px; color:var(--text-2); }
+  .slider .top { display:flex; justify-content:space-between; }
+  .slider .top b { color:var(--text); font-variant-numeric:tabular-nums; }
+  .slider input { width:100%; margin-top:4px; }
+  #debug { font-size:11px; color:#667; font-variant-numeric:tabular-nums; line-height:1.5; }
+  .hidden { display:none !important; }
+  footer { font-size:11px; color:#555d70; text-align:center; margin-top:16px; }
+</style>
+</head>
+<body>
+
+<h1>なりきりマエストロ</h1>
+<p class="sub">iPhone お試し版(Web)</p>
+
+<!-- 1. はじめる(センサー・音声の許可) -->
+<div class="card" id="startCard">
+  <p class="note">
+    スマホを握って指揮するように振ると、その速さに合わせて曲のテンポが変わります。<br>
+    ・振り下ろして「底に着いた瞬間」が1拍です。<br>
+    ・始める前に、コントロールセンターで<b>画面の向きをロック</b>してください(振ると画面が回転してしまいます)。<br>
+    ・マナーモードだと音が出ないことがあります。
+  </p>
+  <p class="warn hidden" id="httpsWarn">このページはHTTPSで開かれていないため、センサーが使えません。https:// で始まるURLで開いてください。</p>
+  <button class="gold" id="startBtn">はじめる(センサーを許可)</button>
+  <p class="warn hidden" id="startErr"></p>
+</div>
+
+<div id="app" class="hidden">
+  <!-- 2. 曲の選択 -->
+  <div class="card">
+    <h2>曲(MP3 / AAC)</h2>
+    <div id="songName">まだ選ばれていません</div>
+    <label class="filebtn" for="fileInput" id="fileLabel">「ファイル」から曲を選ぶ</label>
+    <input type="file" id="fileInput" accept="audio/*,.mp3,.m4a,.aac">
+    <p class="note">Apple Musicの曲(著作権保護付き)は選べません。「ファイル」アプリに置いたMP3/m4aを使ってください。</p>
+  </div>
+
+  <!-- 3. メイン -->
+  <div class="card">
+    <div id="status">曲を選んでください。</div>
+    <div class="meters">
+      <div class="meter"><div class="lbl">基準テンポ</div><div class="num" id="baseBpm">--</div></div>
+      <div id="indicator"></div>
+      <div class="meter"><div class="lbl">あなたのテンポ</div><div class="num" id="detBpm">--</div></div>
+    </div>
+
+    <button id="calibStartBtn" disabled>基準テンポ作成開始</button>
+    <label class="chk"><input type="checkbox" id="clickChk"> 基準づくり中、拍ごとに「ポン」と鳴らす</label>
+    <div class="row">
+      <button id="calibSaveBtn" disabled>この基準を保存</button>
+      <button id="calibResetBtn" disabled>基準をリセット</button>
+    </div>
+    <div class="row">
+      <button class="big" id="playBtn" disabled>なりきり再生</button>
+      <button class="narrow" id="playFromStartBtn" disabled>最初から</button>
+    </div>
+  </div>
+
+  <!-- 4. 設定 -->
+  <details id="settingsBox">
+    <summary>設定(うまく拍が取れないとき)</summary>
+    <fieldset>
+      <legend>検出する軸</legend>
+      <label class="radio"><input type="radio" name="axis" value="x">X</label>
+      <label class="radio"><input type="radio" name="axis" value="y">Y</label>
+      <label class="radio"><input type="radio" name="axis" value="z">Z(おすすめ)</label>
+    </fieldset>
+    <fieldset>
+      <legend>拍とみなす向き</legend>
+      <label class="radio"><input type="radio" name="dir" value="negToPos">負→正(標準)</label>
+      <label class="radio"><input type="radio" name="dir" value="posToNeg">正→負</label>
+      <p class="note">振り上げたときに拍が鳴ってしまう場合は、「正→負」に切り替えてください。</p>
+    </fieldset>
+    <fieldset>
+      <legend>検出</legend>
+      <div class="slider"><div class="top"><span>しきい値(上げると鈍感)</span><b id="v_threshold"></b></div>
+        <input type="range" id="s_threshold" min="5" max="200" step="1"></div>
+      <div class="slider"><div class="top"><span>拍とみなす最短間隔</span><b id="v_minInterval"></b></div>
+        <input type="range" id="s_minInterval" min="0.10" max="1.00" step="0.05"></div>
+      <div class="slider"><div class="top"><span>平滑化</span><b id="v_vTau"></b></div>
+        <input type="range" id="s_vTau" min="0.05" max="0.60" step="0.01"></div>
+    </fieldset>
+    <fieldset>
+      <legend>再生</legend>
+      <div class="slider"><div class="top"><span>感度</span><b id="v_sensitivity"></b></div>
+        <input type="range" id="s_sensitivity" min="0" max="2" step="0.05"></div>
+      <div class="slider"><div class="top"><span>テンポ変化の許容範囲</span><b id="v_tolerance"></b></div>
+        <input type="range" id="s_tolerance" min="0.05" max="0.20" step="0.01"></div>
+      <div class="slider"><div class="top"><span>復帰の速さ</span><b id="v_recovery"></b></div>
+        <input type="range" id="s_recovery" min="1" max="8" step="0.5"></div>
+    </fieldset>
+    <button id="resetSettingsBtn">設定を初期値に戻す</button>
+    <div id="debug">-</div>
+  </details>
+</div>
+
+<footer>AraSoft w,Claude @2026.</footer>
+
+<script>
+'use strict';
+
+// =====================================================================
+// 設定(要件定義書4.8の設定画面・Android版 AppSettings.kt と同じ初期値)
+// =====================================================================
+const DEFAULTS = {
+  axis: 'z', dir: 'negToPos',
+  threshold: 50, minInterval: 0.3, vTau: 0.3,
+  sensitivity: 1.35, tolerance: 0.17, recovery: 4,
+  stillTimeout: 3, click: true,
+};
+const SETTINGS_KEY = 'narikiri_settings_v1';
+const CURVE_KEY_PREFIX = 'narikiri_curve_v1:';
+
+function lsGet(key){ try { return localStorage.getItem(key); } catch(e){ return null; } }
+function lsSet(key, val){ try { localStorage.setItem(key, val); } catch(e){} }
+function lsDel(key){ try { localStorage.removeItem(key); } catch(e){} }
+
+let settings = Object.assign({}, DEFAULTS);
+try { const s = JSON.parse(lsGet(SETTINGS_KEY) || 'null'); if (s) settings = Object.assign({}, DEFAULTS, s); } catch(e){}
+function saveSettings(){ lsSet(SETTINGS_KEY, JSON.stringify(settings)); }
+
+// =====================================================================
+// 拍検出(BeatEngine.kt の移植、要件定義書4.1)
+// =====================================================================
+const GRAVITY_TAU = 1.0;        // 秒。重力・傾き成分を追跡する時定数(遅い)
+const MOTION_SMOOTH_TAU = 0.05; // 秒。高周波ノイズを均す時定数(速い)
+const MOTION_SCALE = 12.0;
+
+function makeAxisFilter(){
+  return {
+    grav: null, filtered: 0,
+    prime(raw){ this.grav = raw; this.filtered = 0; },
+    update(raw, dt){
+      if (this.grav === null) this.grav = raw;
+      this.grav += (raw - this.grav) * (1 - Math.exp(-dt / GRAVITY_TAU));
+      const hp = raw - this.grav;
+      this.filtered += (hp - this.filtered) * (1 - Math.exp(-dt / MOTION_SMOOTH_TAU));
+    },
+    scaled(){ return this.filtered * MOTION_SCALE; },
+  };
+}
+
+function makeDetector(){
+  return {
+    lastVal: null, lastT: null, smoothedV: 0, sign: 0, lastBeatT: null,
+    lastInterval: null, beatCount: 0,
+    step(value, t, threshold, minInterval, vTau, dir){
+      const lv = this.lastVal, lt = this.lastT;
+      this.lastVal = value; this.lastT = t;
+      if (lv === null || lt === null) return false;
+      const dt = t - lt;
+      if (dt <= 0) return false;
+      const rawV = (value - lv) / dt;
+      this.smoothedV += (rawV - this.smoothedV) * (1 - Math.exp(-dt / vTau));
+      let newSign = this.sign;
+      if (this.smoothedV > threshold) newSign = 1;
+      else if (this.smoothedV < -threshold) newSign = -1;
+      let beat = false;
+      if (this.sign !== 0 && newSign !== 0 && newSign !== this.sign){
+        const wanted = dir === 'posToNeg'
+          ? (this.sign === 1 && newSign === -1)
+          : (this.sign === -1 && newSign === 1);
+        if (wanted){
+          const lb = this.lastBeatT;
+          if (lb === null || (t - lb) >= minInterval){
+            this.lastInterval = (lb !== null) ? (t - lb) : null;
+            this.lastBeatT = t;
+            this.beatCount++;
+            beat = true;
+          }
+        }
+      }
+      if (newSign !== 0) this.sign = newSign;
+      return beat;
+    },
+    reset(){
+      this.lastVal = null; this.lastT = null; this.smoothedV = 0; this.sign = 0;
+      this.lastBeatT = null; this.lastInterval = null; this.beatCount = 0;
+    },
+  };
+}
+
+const AXES = ['x', 'y', 'z'];
+const beatEngine = {
+  filters: { x: makeAxisFilter(), y: makeAxisFilter(), z: makeAxisFilter() },
+  detectors: { x: makeDetector(), y: makeDetector(), z: makeDetector() },
+  lastSensorT: null, primed: false, sampleCount: 0,
+  onSample(rx, ry, rz, tSec){
+    this.sampleCount++;
+    const lt = this.lastSensorT;
+    this.lastSensorT = tSec;
+    const raw = { x: rx, y: ry, z: rz };
+    if (lt === null || !this.primed){
+      AXES.forEach(a => this.filters[a].prime(raw[a]));
+      this.primed = true;
+      return;
+    }
+    const dt = Math.max(0.001, tSec - lt);
+    AXES.forEach(a => this.filters[a].update(raw[a], dt));
+  },
+  // 全軸を常に回し、選択中の軸の結果だけを採用する(軸を切り替えてもすぐ追従)
+  step(t, s){
+    let activeBeat = false;
+    for (const a of AXES){
+      const d = this.detectors[a].step(this.filters[a].scaled(), t, s.threshold, s.minInterval, s.vTau, s.dir);
+      if (a === s.axis && d) activeBeat = true;
+    }
+    return activeBeat;
+  },
+  lastInterval(a){ return this.detectors[a].lastInterval; },
+  resetDetectors(){ AXES.forEach(a => this.detectors[a].reset()); },
+};
+
+function handleMotion(e){
+  const g = e.accelerationIncludingGravity;
+  if (!g || g.x === null || g.y === null) return;
+  beatEngine.onSample(g.x || 0, g.y || 0, g.z || 0, performance.now() / 1000);
+}
+
+// =====================================================================
+// 基準テンポ(TempoCurve.kt の移植、要件定義書4.2)
+// =====================================================================
+const BIN_SEC = 2.0;
+const TempoCurve = {
+  build(rawBeats){
+    if (!rawBeats.length) return [];
+    const bins = new Map();
+    for (const b of rawBeats){
+      const k = Math.floor(b.pos / BIN_SEC);
+      if (!bins.has(k)) bins.set(k, []);
+      bins.get(k).push(b.interval);
+    }
+    const pts = [...bins.keys()].sort((a, b) => a - b).map(k => {
+      const iv = bins.get(k).slice().sort((a, b) => a - b);
+      const mid = Math.floor(iv.length / 2);
+      const med = iv.length % 2 ? iv[mid] : (iv[mid - 1] + iv[mid]) / 2;
+      return { t: (k + 0.5) * BIN_SEC, bpm: 60 / med };
+    });
+    // 隣接ビンから大きく外れた値を、差の最大30%までに抑える簡易ヒステリシス
+    if (pts.length >= 3){
+      for (let i = 1; i < pts.length - 1; i++){
+        const avg = (pts[i - 1].bpm + pts[i + 1].bpm) / 2;
+        const maxDiff = avg * 0.3;
+        const diff = Math.max(-maxDiff, Math.min(maxDiff, pts[i].bpm - avg));
+        pts[i] = { t: pts[i].t, bpm: avg + diff };
+      }
+    }
+    return pts;
+  },
+  bpmAt(pts, pos){
+    if (!pts || !pts.length) return null;
+    if (pts.length === 1 || pos <= pts[0].t) return pts[0].bpm;
+    const last = pts[pts.length - 1];
+    if (pos >= last.t) return last.bpm;
+    for (let i = 0; i < pts.length - 1; i++){
+      const a = pts[i], b = pts[i + 1];
+      if (pos >= a.t && pos <= b.t){
+        if (b.t === a.t) return a.bpm;
+        return a.bpm + (b.bpm - a.bpm) * (pos - a.t) / (b.t - a.t);
+      }
+    }
+    return last.bpm;
+  },
+  // なりきり再生はここまで(要件定義書4.4)
+  duration(pts){ return pts && pts.length ? pts[pts.length - 1].t + BIN_SEC / 2 : 0; },
+};
+
+// =====================================================================
+// テンポマッピング(TempoMapper.kt の移植、要件定義書4.3)
+// =====================================================================
+const tempoMapper = {
+  smoothedTempoMul: 1, currentRatio: 1, lastBeatAt: null,
+  onBeat(t){ this.lastBeatAt = t; },
+  step(t, dt, lastInterval, expectedBpm, s){
+    const since = this.lastBeatAt === null ? Infinity : t - this.lastBeatAt;
+    const isStill = since > s.stillTimeout || lastInterval === null || expectedBpm === null;
+    let target, tau;
+    if (isStill){
+      target = 1; tau = Math.max(0.05, s.recovery / 3); this.currentRatio = 1;
+    } else {
+      const ratio = (60 / Math.max(1, expectedBpm)) / lastInterval;
+      this.currentRatio = ratio;
+      const delta = Math.max(-s.tolerance, Math.min(s.tolerance, (ratio - 1) * s.sensitivity));
+      target = 1 + delta; tau = 0.15;
+    }
+    this.smoothedTempoMul += (target - this.smoothedTempoMul) * (1 - Math.exp(-dt / tau));
+  },
+  reset(){ this.smoothedTempoMul = 1; this.currentRatio = 1; this.lastBeatAt = null; },
+};
+
+// =====================================================================
+// 音声
+// =====================================================================
+const audio = new Audio();
+audio.preload = 'auto';
+audio.setAttribute('playsinline', '');
+audio.preservesPitch = true;         // テンポを変えてもピッチは変えない
+audio.webkitPreservesPitch = true;
+let songUrl = null, songKey = null;
+let lastAppliedRate = 1;
+let audioCtx = null;
+
+function setRate(r){
+  if (Math.abs(r - lastAppliedRate) < 0.005) return; // 細かすぎる更新は音切れの原因になるので間引く
+  lastAppliedRate = r;
+  try { audio.playbackRate = r; } catch(e){}
+}
+function forceRate1(){ lastAppliedRate = 1; try { audio.playbackRate = 1; } catch(e){} }
+
+function playClick(){
+  if (!audioCtx) return;
+  const t0 = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sine'; osc.frequency.value = 880;
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.exponentialRampToValueAtTime(0.5, t0 + 0.005);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.06);
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(t0); osc.stop(t0 + 0.07);
+}
+
+// =====================================================================
+// 画面の常時点灯(要件定義書4.8「画面制御」。iOS 16.4以降のSafariで有効)
+// =====================================================================
+let wakeLock = null;
+async function requestWakeLock(){
+  try {
+    if ('wakeLock' in navigator && document.visibilityState === 'visible' && !wakeLock){
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    }
+  } catch(e){ wakeLock = null; }
+}
+
+// =====================================================================
+// 状態管理
+// =====================================================================
+// noSong / idle(基準なし) / calibrating / ready(基準あり・停止中) / playing
+let state = 'noSong';
+let curve = null;
+let rawBeats = [];
+const $ = id => document.getElementById(id);
+
+function hasCurve(){ return !!(curve && curve.length); }
+
+function setStatus(text){ $('status').textContent = text; }
+
+function refreshButtons(){
+  const song = state !== 'noSong';
+  const hc = hasCurve();
+  $('calibStartBtn').disabled = !song || state === 'playing';
+  $('calibStartBtn').textContent = state === 'calibrating' ? '記録中…(押すと停止)' : '基準テンポ作成開始';
+  $('calibSaveBtn').disabled = !song || state === 'playing' || (state !== 'calibrating' && rawBeats.length === 0);
+  $('calibResetBtn').disabled = !song || !hc || state === 'playing' || state === 'calibrating';
+  const playEnabled = state === 'playing' || (hc && (state === 'ready'));
+  $('playBtn').disabled = !playEnabled;
+  $('playFromStartBtn').disabled = !playEnabled;
+  $('playBtn').textContent = state === 'playing' ? '停止' : 'なりきり再生';
+  $('fileLabel').style.opacity = (state === 'calibrating' || state === 'playing') ? 0.4 : 1;
+  $('fileLabel').style.pointerEvents = (state === 'calibrating' || state === 'playing') ? 'none' : 'auto';
+  // 要件定義書4.9(2): 操作の順序を青ハイライトで誘導
+  $('calibStartBtn').classList.toggle('hl', song && !hc && state !== 'calibrating');
+  $('playBtn').classList.toggle('hl', hc && playEnabled);
+}
+
+function setIndicator(ratio){
+  // 要件定義書4.8「速遅カラー表示」5段階(しきい値はAndroid版と同じ暫定値)
+  let c = 'var(--neutral)';
+  if (ratio > 1.10) c = 'var(--fast-deep)';
+  else if (ratio > 1.03) c = 'var(--fast)';
+  else if (ratio >= 0.97) c = 'var(--neutral)';
+  else if (ratio >= 0.90) c = 'var(--slow-light)';
+  else c = 'var(--slow)';
+  $('indicator').style.background = c;
+}
+let pulseTimer = null;
+function pulse(){
+  const el = $('indicator');
+  el.classList.add('beat');
+  clearTimeout(pulseTimer);
+  pulseTimer = setTimeout(() => el.classList.remove('beat'), 110);
+}
+
+// ---- 曲の選択 ----
+$('fileInput').addEventListener('change', e => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  audio.pause();
+  if (songUrl) URL.revokeObjectURL(songUrl);
+  songUrl = URL.createObjectURL(f);
+  audio.src = songUrl;
+  audio.load();
+  // ファイル名+サイズを簡易フィンガープリントとして、基準テンポをこの端末のブラウザに保存する
+  songKey = CURVE_KEY_PREFIX + f.name + ':' + f.size;
+  try { curve = JSON.parse(lsGet(songKey) || 'null'); } catch(err){ curve = null; }
+  rawBeats = [];
+  $('songName').textContent = f.name;
+  $('baseBpm').textContent = hasCurve() ? Math.round(curve[0].bpm) : '--';
+  $('detBpm').textContent = '--';
+  setIndicator(1);
+  if (hasCurve()){
+    state = 'ready';
+    setStatus('この曲の基準テンポが保存されています。「なりきり再生」で指揮を楽しめます。');
+  } else {
+    state = 'idle';
+    setStatus('まず「基準テンポ作成開始」を押し、曲に合わせて1回指揮してください。');
+  }
+  refreshButtons();
+  e.target.value = ''; // 同じファイルを選び直せるように
+});
+
+// ---- 基準づくり ----
+$('calibStartBtn').addEventListener('click', async () => {
+  if (state === 'calibrating'){
+    audio.pause();
+    state = hasCurve() ? 'ready' : 'idle';
+    setStatus(`記録を停止しました(${rawBeats.length}拍記録済み)。「この基準を保存」で確定するか、やり直せます。`);
+    refreshButtons();
+    return;
+  }
+  rawBeats = [];
+  beatEngine.resetDetectors();
+  audio.currentTime = 0;
+  forceRate1();
+  state = 'calibrating';
+  setStatus('基準テンポ作成中:曲に合わせて1回指揮してください。');
+  $('baseBpm').textContent = '記録';
+  refreshButtons();
+  try { await audio.play(); } catch(err){ setStatus('再生できませんでした: ' + err.message); state = hasCurve() ? 'ready' : 'idle'; refreshButtons(); }
+});
+
+$('calibSaveBtn').addEventListener('click', () => {
+  if (rawBeats.length < 4){
+    setStatus(`記録が${rawBeats.length}拍しかありません。最低4拍必要です。もう少し長く指揮してください。`);
+    return;
+  }
+  audio.pause();
+  curve = TempoCurve.build(rawBeats);
+  if (songKey) lsSet(songKey, JSON.stringify(curve));
+  rawBeats = [];
+  audio.currentTime = 0;
+  beatEngine.resetDetectors();
+  tempoMapper.reset();
+  state = 'ready';
+  $('baseBpm').textContent = Math.round(curve[0].bpm);
+  setStatus('基準テンポを保存しました。「なりきり再生」で指揮を楽しめます。');
+  refreshButtons();
+});
+
+$('calibResetBtn').addEventListener('click', () => {
+  if (songKey) lsDel(songKey);
+  curve = null; rawBeats = [];
+  audio.pause(); audio.currentTime = 0;
+  state = 'idle';
+  $('baseBpm').textContent = '--';
+  setStatus('基準テンポをリセットしました。「基準テンポ作成開始」からやり直してください。');
+  refreshButtons();
+});
+
+// ---- なりきり再生 ----
+async function startPlayback(fromStart){
+  if (!hasCurve()) return;
+  if (fromStart || audio.currentTime >= TempoCurve.duration(curve)) audio.currentTime = 0;
+  beatEngine.resetDetectors();
+  tempoMapper.reset();
+  forceRate1();
+  state = 'playing';
+  setStatus('なりきり再生中');
+  refreshButtons();
+  try { await audio.play(); } catch(err){ setStatus('再生できませんでした: ' + err.message); state = 'ready'; refreshButtons(); }
+}
+$('playBtn').addEventListener('click', () => {
+  if (state === 'playing'){
+    audio.pause(); state = 'ready';
+    setStatus('一時停止しました。「なりきり再生」で続きから再開できます。');
+    refreshButtons();
+    return;
+  }
+  startPlayback(false);
+});
+$('playFromStartBtn').addEventListener('click', () => startPlayback(true));
+
+audio.addEventListener('error', () => {
+  if (!audio.src) return;
+  audio.pause();
+  state = 'noSong';
+  setStatus('この曲は再生できませんでした。MP3またはAAC(m4a)のファイルを選んでください。');
+  refreshButtons();
+});
+
+audio.addEventListener('ended', () => {
+  if (state === 'calibrating'){
+    state = hasCurve() ? 'ready' : 'idle';
+    setStatus(`曲が最後まで再生されました(${rawBeats.length}拍記録済み)。「この基準を保存」で確定できます。`);
+  } else if (state === 'playing'){
+    state = 'ready'; audio.currentTime = 0;
+    setStatus('なりきり再生が終わりました。');
+  }
+  refreshButtons();
+});
+
+// ---- 中断時の挙動(要件定義書4.8) ----
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden'){
+    if (state === 'calibrating'){
+      audio.pause(); rawBeats = [];
+      state = hasCurve() ? 'ready' : 'idle';
+      setStatus('アプリから離れたため、基準テンポの記録を破棄しました。もう一度「基準テンポ作成開始」からやり直してください。');
+    } else if (state === 'playing'){
+      audio.pause(); state = 'ready';
+      setStatus('中断しました。「なりきり再生」で続きから再開できます。');
+    }
+    refreshButtons();
+  } else {
+    requestWakeLock();
+  }
+});
+
+// =====================================================================
+// メインループ(約60fps)
+// =====================================================================
+let lastLoopT = null;
+function loop(nowMs){
+  const t = nowMs / 1000;
+  const dt = lastLoopT === null ? 1 / 60 : Math.min(0.1, t - lastLoopT);
+  lastLoopT = t;
+  const s = settings;
+  const beat = beatEngine.step(t, s);
+  const li = beatEngine.lastInterval(s.axis);
+
+  if (state === 'calibrating'){
+    if (beat){
+      pulse();
+      if (li !== null) rawBeats.push({ pos: audio.currentTime, interval: li });
+      if (s.click) playClick();
+    }
+    $('detBpm').textContent = li ? Math.round(60 / li) : '--';
+    setIndicator(1);
+  } else if (state === 'playing'){
+    if (beat){ tempoMapper.onBeat(t); pulse(); }
+    const pos = audio.currentTime;
+    const expected = TempoCurve.bpmAt(curve, pos);
+    tempoMapper.step(t, dt, li, expected, s);
+    setRate(tempoMapper.smoothedTempoMul);
+    $('baseBpm').textContent = expected ? Math.round(expected) : '--';
+    $('detBpm').textContent = li ? Math.round(60 / li) : '--';
+    setIndicator(tempoMapper.currentRatio);
+    if (pos >= TempoCurve.duration(curve)){
+      audio.pause(); audio.currentTime = 0; state = 'ready';
+      setStatus('基準テンポの記録範囲まで再生しました。');
+      refreshButtons();
+    }
+  } else if (beat){
+    pulse(); // 停止中も拍の検出だけは見える(振り方の練習用)
+  }
+
+  if ($('settingsBox').open){
+    const d = beatEngine.detectors[s.axis];
+    $('debug').textContent =
+      `軸:${s.axis.toUpperCase()} 変化率v:${d.smoothedV.toFixed(1)}(しきい値${s.threshold}) ` +
+      `拍間隔:${li ? li.toFixed(2) + 's' : '--'} 再生速度:${tempoMapper.smoothedTempoMul.toFixed(2)}x ` +
+      `センサー:${beatEngine.sampleCount}件`;
+  }
+  requestAnimationFrame(loop);
+}
+
+// =====================================================================
+// 設定UI
+// =====================================================================
+const SLIDERS = {
+  threshold:   v => String(Math.round(v)),
+  minInterval: v => v.toFixed(2) + '秒',
+  vTau:        v => v.toFixed(2) + '秒',
+  sensitivity: v => v.toFixed(2) + '倍',
+  tolerance:   v => '±' + Math.round(v * 100) + '%',
+  recovery:    v => v.toFixed(1) + '秒',
+};
+function renderSettings(){
+  document.querySelectorAll('input[name=axis]').forEach(r => r.checked = r.value === settings.axis);
+  document.querySelectorAll('input[name=dir]').forEach(r => r.checked = r.value === settings.dir);
+  for (const k in SLIDERS){
+    $('s_' + k).value = settings[k];
+    $('v_' + k).textContent = SLIDERS[k](settings[k]);
+  }
+  $('clickChk').checked = settings.click;
+}
+document.querySelectorAll('input[name=axis]').forEach(r => r.addEventListener('change', () => {
+  settings.axis = r.value; saveSettings();
+}));
+document.querySelectorAll('input[name=dir]').forEach(r => r.addEventListener('change', () => {
+  settings.dir = r.value; beatEngine.resetDetectors(); saveSettings();
+}));
+for (const k in SLIDERS){
+  $('s_' + k).addEventListener('input', e => {
+    settings[k] = parseFloat(e.target.value);
+    $('v_' + k).textContent = SLIDERS[k](settings[k]);
+    saveSettings();
+  });
+}
+$('clickChk').addEventListener('change', e => { settings.click = e.target.checked; saveSettings(); });
+$('resetSettingsBtn').addEventListener('click', () => {
+  settings = Object.assign({}, DEFAULTS); saveSettings(); renderSettings(); beatEngine.resetDetectors();
+});
+renderSettings();
+
+// =====================================================================
+// はじめる: センサー許可と音声のロック解除(iOSはタップ操作の中で行う必要がある)
+// =====================================================================
+if (!window.isSecureContext){ $('httpsWarn').classList.remove('hidden'); }
+
+$('startBtn').addEventListener('click', async () => {
+  const errEl = $('startErr');
+  errEl.classList.add('hidden');
+  // 音声のロック解除は await より前に同期的に行う(タップ操作の直後でないとiOSが許可しない)
+  try {
+    if (navigator.audioSession) navigator.audioSession.type = 'playback'; // マナーモードでも鳴らす(iOS 17+)
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch(e){}
+  if (typeof DeviceMotionEvent === 'undefined'){
+    errEl.textContent = 'このブラウザは加速度センサーに対応していません。';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  try {
+    if (typeof DeviceMotionEvent.requestPermission === 'function'){
+      const res = await DeviceMotionEvent.requestPermission();
+      if (res !== 'granted'){
+        errEl.textContent = 'センサーの使用が許可されませんでした。Safariを完全に閉じてから、もう一度開いて「許可」を選んでください。';
+        errEl.classList.remove('hidden');
+        return;
+      }
+    }
+  } catch(e){
+    errEl.textContent = 'センサーの許可でエラーが発生しました(' + e.message + ')。HTTPSで開いているか確認してください。';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  window.addEventListener('devicemotion', handleMotion);
+  requestWakeLock();
+  $('startCard').classList.add('hidden');
+  $('app').classList.remove('hidden');
+  refreshButtons();
+  requestAnimationFrame(loop);
+  // センサー値が届いているかの確認
+  setTimeout(() => {
+    if (beatEngine.sampleCount === 0){
+      setStatus('センサーの値が届いていません。ページを再読み込みして、もう一度「はじめる」から許可してください。');
+    }
+  }, 2000);
+});
+</script>
+</body>
+</html>
