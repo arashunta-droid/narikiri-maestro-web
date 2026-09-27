@@ -209,10 +209,23 @@ function makeAxisFilter(){
   };
 }
 
+// v0.2: 検出テンポの平滑化に使う直近拍数(中央値)。Android版 v1.1 と同じ
+const INTERVAL_MEDIAN_WINDOW = 3;
+
 function makeDetector(){
   return {
     lastVal: null, lastT: null, smoothedV: 0, sign: 0, lastBeatT: null,
     lastInterval: null, beatCount: 0,
+    // v0.2: 直近3拍の拍間隔の中央値(表示・テンポマッピング用)。2拍分の間は平均。
+    // 基準テンポ記録には生の lastInterval を使う(TempoCurve側でビンごとに中央値を取るため)
+    smoothedInterval: null, recentIntervals: [],
+    pushInterval(iv){
+      this.recentIntervals.push(iv);
+      while (this.recentIntervals.length > INTERVAL_MEDIAN_WINDOW) this.recentIntervals.shift();
+      const a = this.recentIntervals.slice().sort((x, y) => x - y);
+      const n = a.length;
+      this.smoothedInterval = (n % 2 === 1) ? a[(n - 1) / 2] : (a[n / 2 - 1] + a[n / 2]) / 2;
+    },
     step(value, t, threshold, minInterval, vTau, dir){
       const lv = this.lastVal, lt = this.lastT;
       this.lastVal = value; this.lastT = t;
@@ -233,6 +246,7 @@ function makeDetector(){
           const lb = this.lastBeatT;
           if (lb === null || (t - lb) >= minInterval){
             this.lastInterval = (lb !== null) ? (t - lb) : null;
+            if (this.lastInterval !== null) this.pushInterval(this.lastInterval);
             this.lastBeatT = t;
             this.beatCount++;
             beat = true;
@@ -245,6 +259,7 @@ function makeDetector(){
     reset(){
       this.lastVal = null; this.lastT = null; this.smoothedV = 0; this.sign = 0;
       this.lastBeatT = null; this.lastInterval = null; this.beatCount = 0;
+      this.smoothedInterval = null; this.recentIntervals = [];
     },
   };
 }
@@ -277,6 +292,7 @@ const beatEngine = {
     return activeBeat;
   },
   lastInterval(a){ return this.detectors[a].lastInterval; },
+  smoothedInterval(a){ return this.detectors[a].smoothedInterval; },
   resetDetectors(){ AXES.forEach(a => this.detectors[a].reset()); },
 };
 
@@ -596,7 +612,8 @@ function loop(nowMs){
   lastLoopT = t;
   const s = settings;
   const beat = beatEngine.step(t, s);
-  const li = beatEngine.lastInterval(s.axis);
+  const li = beatEngine.lastInterval(s.axis);      // 生の拍間隔(基準テンポ記録用)
+  const si = beatEngine.smoothedInterval(s.axis);  // v0.2: 直近3拍の中央値(表示・速度制御用)
 
   if (state === 'calibrating'){
     if (beat){
@@ -604,16 +621,16 @@ function loop(nowMs){
       if (li !== null) rawBeats.push({ pos: audio.currentTime, interval: li });
       if (s.click) playClick();
     }
-    $('detBpm').textContent = li ? Math.round(60 / li) : '--';
+    $('detBpm').textContent = si ? Math.round(60 / si) : '--';
     setIndicator(1);
   } else if (state === 'playing'){
     if (beat){ tempoMapper.onBeat(t); pulse(); }
     const pos = audio.currentTime;
     const expected = TempoCurve.bpmAt(curve, pos);
-    tempoMapper.step(t, dt, li, expected, s);
+    tempoMapper.step(t, dt, si, expected, s);
     setRate(tempoMapper.smoothedTempoMul);
     $('baseBpm').textContent = expected ? Math.round(expected) : '--';
-    $('detBpm').textContent = li ? Math.round(60 / li) : '--';
+    $('detBpm').textContent = si ? Math.round(60 / si) : '--';
     setIndicator(tempoMapper.currentRatio);
     if (pos >= TempoCurve.duration(curve)){
       audio.pause(); audio.currentTime = 0; state = 'ready';
@@ -628,7 +645,7 @@ function loop(nowMs){
     const d = beatEngine.detectors[s.axis];
     $('debug').textContent =
       `軸:${s.axis.toUpperCase()} 変化率v:${d.smoothedV.toFixed(1)}(しきい値${s.threshold}) ` +
-      `拍間隔:${li ? li.toFixed(2) + 's' : '--'} 再生速度:${tempoMapper.smoothedTempoMul.toFixed(2)}x ` +
+      `拍間隔:${li ? li.toFixed(2) + 's' : '--'}(中央値:${si ? si.toFixed(2) + 's' : '--'}) 再生速度:${tempoMapper.smoothedTempoMul.toFixed(2)}x ` +
       `センサー:${beatEngine.sampleCount}件`;
   }
   requestAnimationFrame(loop);
